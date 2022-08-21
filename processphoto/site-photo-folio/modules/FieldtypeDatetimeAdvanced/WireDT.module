@@ -1,0 +1,77 @@
+<?php
+
+class WireDT extends WireData implements Module {
+	public static function getModuleInfo() {
+		return array(
+			"title"			=>	"Datetime Extensions",
+			"summary"		=>	"Extension to basic datetime fields necessary for advanced selector features",
+			"version"		=>	"1.0.3",
+			"autoload"		=>	true,
+		);
+	}
+
+	// Operators/Format strings, key is the name to us in selectors,
+	// first value is for MySQL, second for PHP's date function
+	protected  $_operators = array(
+		"day"			=>	array("d", "d"),
+		"month"			=>	array("c", "m"),
+		"year"			=>	array("Y", "Y"),
+		"hour"			=>	array("H", "H"),
+		"minutes"		=>	array("i", "i"),
+		"seconds"		=>	array("s", "s"),
+		"day_of_week"	=>	array("w", "w"),
+		"day_of_year"	=>	array("j", "z"),
+		"week_of_year"	=>	array("v", "W"),
+		"date"			=>	array("%Y-%m-%d", "Y-m-d"),
+		"time"			=>	array("T", "H:i:s"),
+	);
+
+	public function ___getOperators() {
+		return $this->_operators;
+	}
+	
+	/**
+	 * Return the format string for the given operator.
+	 *
+	 * @param $key String Name of the operator
+	 * @param $target String either "SQL" or "PHP"
+	 * @return String
+	 */
+	public function getOperator($key, $target) {
+		$ops = $this->getOperators();
+		return $ops[$key][$target == 'SQL' ? 0 : 1];
+	}
+
+	public function hasOperator($key) {
+		$ops = $this->getOperators();
+		return array_key_exists($key, $ops);
+	}
+
+	public function get($key) {
+		if($this->isAllowedSubfield($key)) {
+			$ops = $this->getOperators();
+			return date($ops[$key][1], $this->get("value"));
+		}
+		return parent::get($key);
+	}
+
+	public function __toString() {
+		if(empty($this->get("value"))) return "";
+		return (string)$this->get("value");
+	}
+	
+	public function strftime($fmt) {
+		if(empty($this->get("value"))) return "";
+		return strftime($fmt, (int)$this->get("value"));
+	}
+	
+	public function date($fmt) {
+		if(empty($this->get("value"))) return "";
+		return date($fmt, (int)$this->get("value"));
+	}
+	
+	public function isAllowedSubfield($subfield) {
+		return $this->hasOperator($subfield);
+	}
+
+}

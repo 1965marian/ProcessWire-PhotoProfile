@@ -1,0 +1,315 @@
+<?php
+
+/**
+ * ## Advanced Datetime Field
+ *
+ * Allows searching for individual components of datetime fields in
+ * standard subfield syntax.
+ *
+ * ## Possible subfields
+ *
+ * - day
+ * - month
+ * - year (4-digit)
+ * - hour (0..23)
+ * - minutes
+ * - seconds
+ * - day_of_week (0..6, 0 = Sunday)
+ * - day_of_year (0..365)
+ * - week_of_year (1..53)
+ * - date (just the date part, yyyy-mm-dd)
+ * - time (just the time part, hh:mm:ss)
+ *
+ * ## Also installs
+ * WireDT: wrapper class for datetime fields, necessary to support
+ * subfield syntax when filtering PageArrays.
+ *
+ * ## Examples
+ *
+ * ```
+ * $pagelist = $pages->find("mydatefield.year=2016");
+ * ```
+ *
+ * ```
+ * $maypages = $pagelist->filter("mydatefield.month=5");
+ * ```
+ *
+ * ```
+ * $start = date('z');
+ * $end = $start + 7;
+ * $sevendays = $pages->find("mydatefield.day_of_year>=$start, mydatefield.day_of_year<$end");
+ * ```
+ **/
+
+class FieldtypeDatetimeAdvanced extends FieldtypeDatetime implements Module, ConfigurableModule {
+	public static function getModuleInfo() {
+		return array(
+			"title"			=>	"Advanced Datetime field",
+			"summary"		=>	wire()->_("Datetime field with extended search syntax. Needs timezone support enabled in MySQL, see http://dev.mysql.com/doc/refman/5.7/en/time-zone-support.html for details."),
+			"version"		=>	"1.0.4",
+			"installs"		=>	array("WireDT", "InputfieldDatetimeAdvanced")
+		);
+	}
+
+	/* REPLACED with non-static WireDT::[getOperators|getOperator|hasOperator](...)
+	protected static $_operators;
+	*/
+	
+	protected $_dtObj;
+
+	public function init() {
+		$this->_dtObj = new WireDT();
+		parent::init();
+	}
+
+	/**
+	 * Match a date/time value in the database, as used by PageFinder
+	 *
+	 */
+	public function getMatchQuery($query, $table, $subfield, $operator, $value) {
+		
+		if($subfield != "data") {
+			if(! $this->isAllowedSubfield($subfield)) {
+				throw new WireException(sprintf($this->_("Unknown subfield name for datetime field: %s"), $subfield));
+			}
+			if($subfield == "date" || $subfield == "time") {
+				$value = preg_replace('/[^0-9:-]/', '', $value);
+			} else {
+				$value = $this->sanitizer->int($value);
+			}
+			if($operator == "day_of_year") {
+				$value += 1;
+			}
+			$database = $this->wire("database");
+			if($database->isOperator($operator)) {
+				$table = $database->escapeTable($table);
+				$value = $database->escapeStr($value);
+				//$formatarg = self::$_operators[$subfield][0];
+				$formatarg = $this->_dtObj->getOperator($subfield, "SQL");
+				$formatarg = preg_replace('/([a-zA-Z])/', '%$1', $formatarg);
+				$query->where("DATE_FORMAT({$table}.data, '{$formatarg}'){$operator}'$value'");
+			}
+		} else {
+			$value = (int) $this->_sanitizeValue($value); 
+			if($value) $value = date('Y-m-d H:i:s', $value); 
+				else $value = '';
+			$database = $this->wire('database');
+			if($database->isOperator($operator)) {
+				$table = $database->escapeTable($table);
+				$subfield = $database->escapeCol($subfield);
+				$value = $database->escapeStr($value);
+				$query->where("$table.{$subfield}{$operator}'$value'");
+			}
+		}
+		return $query; 
+	}
+	
+	/**
+	 * Convert value from Y-m-d H:i:s string to timestamp
+	 *
+	 */
+	public function ___wakeupValue(Page $page, Field $field, $value) {
+		if(!empty($value)) $value = strtotime($value); 
+		if($value === false) $value = '';
+		$dt = new WireDT();
+		$dt->set("value", $value);
+		return $dt; 
+	}
+
+	/**
+	 * Convert value from timestamp to Y-m-d H:i:s date string
+	 *
+	 */
+	public function ___sleepValue(Page $page, Field $field, $value) {
+		if($value instanceof WireDT) $value = $value->get("value");
+		$value = $this->_sanitizeValue($value); 
+		return is_int($value) && $value > 0 ? date('Y-m-d H:i:s', $value) : '';
+	}
+
+	/**
+	 * Format the value for output, according to selected format and language
+	 *
+	 */
+	public function ___formatValue(Page $page, Field $field, $value) {
+		if($value instanceof WireDT) $value = $value->get("value");
+		$format = '';
+		if($this->languages && !$this->user->language->isDefault()) $format = $field->get("dateOutputFormat{$this->user->language}"); 
+		if(!$format) $format = $field->dateOutputFormat;
+		return $this->formatDate($value, $format); 
+	}
+
+	public function ___exportValue(Page $page, Field $field, $value, array $options = array()) {
+		if($value instanceof WireDT) $value = $value->get("value");
+		if(!$value) return '';
+		return date('Y-m-d H:i:s', $value); 
+	}
+
+	/**
+	 * Sanitize a value assumed to be either a timestamp or in strtotime() compatible format
+	 *
+	 */
+	protected function _sanitizeValue($value) {
+		if($value instanceof WireDT) return $value;
+		if(empty($value)) return new WireDT();
+		
+		// already a timestamp
+		if(ctype_digit(ltrim($value, '-'))) {
+			$value = (int) $value; 
+		} else {
+			$value = strtotime($value);
+		}
+		/*
+		$dt = new WireDT();
+		$dt->set("value", $value);
+		return $dt;
+		*/
+		return $value;
+	}
+
+	public function isAllowedSubfield($subfield) {
+		return $this->_dtObj->hasOperator($subfield);
+	}
+
+	/**
+	 * Given a date/time string and expected format, convert it to a unix timestamp
+	 *
+	 * Note: this method moved to the WireDateTime class and is kept here for backwards compatibility.
+	 * 
+	 * @param string $str Date/time string or WireDT object
+	 * @param string $format Format of the date/time string in PHP date syntax
+	 * @return int
+	 * @deprecated Use WireDateTime class instead
+	 *
+	 */
+	static public function stringToTimestamp($str, $format) {
+		if($str instanceof WireDT) $str = $str->get("value");
+		$wdt = new WireDateTime();
+		return $wdt->stringToTimestamp($str, $format);
+	}
+
+	/**
+	 * Format a date with the given PHP date() or PHP strftime() format
+	 * 
+	 * Note: this method moved to the WireDateTime class and is kept here for backwards compatibility.
+	 *
+ 	 * @param int $value Unix timestamp of date or WireDT object
+	 * @param string $format date() or strftime() format string to use for formatting
+	 * @return string Formatted date string
+	 * @deprecated Use WireDateTime class instead
+	 *
+	 */
+	static public function formatDate($value, $format) {
+		if($value instanceof WireDT) $value = $value->get("value");
+		$wdt = new WireDateTime();
+		return $wdt->formatDate($value, $format);
+	}
+
+
+
+	public function getInputfield(Page $page, Field $field) {
+		$inputfield = $this->modules->get('InputfieldDatetimeAdvanced'); 
+		$inputfield->class = $this->className();
+		return $inputfield; 
+	}
+
+
+	/**
+	 * Return array with information about what properties and operators can be used with this field.
+	 * 
+	 * #pw-group-finding
+	 * 
+	 * @param Field $field
+	 * @param array $data Array of extra data, when/if needed
+	 * @return array See `FieldSelectorInfo` class for details.
+	 *
+	 */
+	public function ___getSelectorInfo(Field $field, array $data = array()) {
+		if($data) {}
+		$selectorInfo = $this->wire(new FieldSelectorInfo());
+		$info = $selectorInfo->getSelectorInfo($field);
+		
+		$ops = $this->_dtObj->getOperators();
+
+		foreach(array_keys($ops) as $op) {
+			$info["subfields"][$op] = array(
+				"name"	=> $op,
+				"label" => $op,
+				"operators" => $info["operators"],
+				"input" => "text",
+				"hint" => "",
+				"options" => array()
+			);
+		}
+		
+		return $info;
+	}
+
+	/**
+	 * Check for timezone support at installation time.
+	 * If timezone data hasn't been installed for MySQL,
+	 * our operations may return wrong values if system
+	 * and PHP timezones differ, so, in that case, we
+	 * output an error message.
+	 */
+	public function install() {
+		// The following query returns NULL if timezone tables are missing/empy in MySQL
+		$qry = $this->database->query("SELECT CONVERT_TZ('2012-06-07 12:00:00', 'GMT', 'America/New_York') AS res;");
+		$row = $qry->fetch(PDO::FETCH_ASSOC);
+		if(empty($row["res"])) {
+			$this->session->error($this->_("Timezone data is not installed in MySQL. Read the README for this module and see http://dev.mysql.com/doc/refman/5.7/en/time-zone-support.html for information!"));
+		}
+	}
+	
+	
+	public function ___getCompatibleFieldtypes(Field $field) {
+		$fieldtypes = $this->wire(new Fieldtypes());
+		foreach($this->wire('fieldtypes') as $fieldtype) {
+			if($fieldtype instanceof FieldtypeDatetime) {
+				$fieldtypes->add($fieldtype);
+			}
+		}
+		return $fieldtypes;
+	}
+	
+	
+	public function ___getModuleConfigInputfields() {
+		
+		$ifs = new InputfieldWrapper();
+		
+		$cmd = $this->config->dbInitCommand;
+		$off = date('O');
+		$needUpdate = false;
+		if(strlen($off) > 0) {
+			if(preg_match('/time_zone/i', $cmd)) {
+				$needUpdate = false;
+				return $ifs;
+			}
+			// PHP returns +0200, MySQL wants +02:00
+			$off = preg_replace('/(\d\d)$/', ':$1', $off);
+			// Append timezone set statement
+			$cmd .= sprintf(", time_zone = '%s' ", $off);
+		}
+		
+		$f = $this->modules->get("InputfieldMarkup");
+		$f->label = $this->_("Enable timezone support in MySQL");
+		$f->description = $this->_("For datetime advanced database selectors to be reliable, PHP and MySQL need to add/subtract the same offsets for datetime and timestamp values.") .
+			" " .
+			$this->_("To accomplish that, the timezone setting in MySQL needs to be set to the same value as in PHP.") .
+			" " .
+			$this->_("Copy the following line to site/config.php:")
+		;
+
+		$f->attr(
+			'value',
+			"<code>" .
+			"\$config->dbInitCommand = \"$cmd\";" .
+			"</code>"
+		);
+		$f->notes = $this->_("Important: timezone data must be loaded in MySQL! See [this link](http://dev.mysql.com/doc/refman/5.7/en/time-zone-support.html) for details.");
+		
+		$ifs->append($f);
+		
+		return $ifs;
+		
+	}
+}

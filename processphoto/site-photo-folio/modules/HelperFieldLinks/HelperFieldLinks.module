@@ -1,0 +1,199 @@
+<?php
+/**
+ * ProcessWire2.* Module
+ *
+ * Shows field and template edit links on page edit
+ *
+ * @author	Philipp 'Soma' Urlich philipp(a)urlich.ch
+ * @created	2011/09/02
+ * last_modified 2019/02/28
+ *
+ *------------------------------------------------
+ * ProcessWire 2.x
+ * Copyright (C) 2011 by Ryan Cramer
+ * Licensed under GNU/GPL v2, see LICENSE.TXT
+ *
+ * http://www.processwire.com
+ * http://www.ryancramer.com
+ *
+ */
+
+class HelperFieldLinks extends Wiredata implements Module {
+
+	public static function getModuleInfo() {
+		return array(
+			'title' => 'Developer helper - field & template shortcuts',
+			'version' => 109,
+			'summary' => 'Adds shortcut edit link to all input fields on page edit. Adds shortcut edit link for the selected template. Only visible for superusers.',
+			'href' => 'http://processwire.com/talk/topic/421-helperfieldlinks-field-and-template-edit-shortcuts/',
+			'singular' => true,
+			'autoload' => true,
+		);
+	}
+
+	public function init() {
+
+		// only when editing a page and role superuser
+		if(strpos($_SERVER['REQUEST_URI'], $this->config->urls->admin . 'page/edit/?id=') !== false && $this->user->hasRole('superuser')){
+
+			// add stylesheets
+			$this->config->styles->add($this->config->urls->HelperFieldLinks . "HelperFieldLinks.css");
+
+			// add a hook after each inputfield is rendered and modify the output
+			$this->addHookAfter('Inputfield::render', $this, 'addShortcutLinks');
+		}
+	}
+
+	/**
+	 * hook method to add edit links
+	 *
+	 */
+	public function addShortcutLinks(HookEvent $event) {
+
+			// to prevent multiple render cycles from adding link multiple times as on page reference fields and possibly others
+			if(strpos($event->return, 'fieldEditLink')) return;
+
+			// returns the event object in this case the inputfield
+			$inputfield	= $event->object;
+			$fname = $inputfield->name;
+			$field = null;
+			if($this->fields->get($fname)) {
+				$field = $this->fields->get($fname);
+				$id = $field->id;
+			}
+			if(strpos($fname,"_repeater") !== FALSE) {
+				$real_fname = preg_replace("/(_repeater[0-9]*)/","",$fname);
+				if($this->fields->get($real_fname)){
+					$field = $this->fields->get($real_fname);
+					$id = $field->id;
+				}
+				$fname = $real_fname;
+			}
+			$settings_str = '';
+			if($field){
+				$settings = $field->getTableData();
+				if(!empty($settings)) {
+					foreach ($settings as $key => $value) {
+						if($key == 'data'){
+							foreach($value as $data_key => $data_value) {
+								if($data_key == "parent_id" && $data_value) {
+									$parent = $this->pages->get((int)$data_value);
+									$data_value = "$data_value (<a href='{$this->config->urls->admin}page/edit/?id=$parent->id'>$parent->path</a>)";
+								}
+								else if($data_key == "template_id") {
+									if(is_array($data_value) && !empty($data_value)){
+										$tpl_links = '';
+										foreach($data_value as $val){
+											$tpl = $this->templates->get((int)$val);
+											if($tpl->id) $tpl_links .= "<a href='{$this->config->urls->admin}setup/template/edit/?id=$tpl->id'>$tpl->name</a> ";
+										}
+										$data_value = $tpl_links;
+									} else if(is_int($data_value)){
+										$tpl = $this->templates->get((int)$data_value);
+										if($tpl->id) $data_value = "<a href='{$this->config->urls->admin}setup/template/edit/?id=$tpl->id'>$tpl->name</a>";
+									}
+								}
+								else if($data_key == "textformatters") {
+									if(!empty($data_value)) {
+										$data_value = implode("|",$data_value);
+									}
+								}
+								else if(is_array($data_value)){
+									$data_value = implode("|",$data_value);
+								}
+
+								$settings_str .= "<span>$data_key:</span> $data_value<br/>";
+
+							}
+						} else {
+							$settings_str .= "<span>$key:</span> " . $value . "<br/>";
+						}
+
+
+					}
+				}
+			}
+			if($settings_str) $settings_str = "<div class='hfl_settings'>$settings_str</div>";
+			if(isset($id)) return $event->return .=
+<<<OUT
+	<div class='fieldEditLink ui-helper-clearfix'>
+		<div>
+			<a href='{$this->config->urls->admin}setup/field/edit?id={$id}' title='edit field settings'>{$fname}</a>
+			<a href='#' class='hfl_settings_toggle' onclick='$(this).closest(".fieldEditLink").next(".hfl_settings").fadeToggle("fast"); return false;'><span class='ui-icon ui-icon-gear'></span></a>
+		</div>
+	</div>
+	$settings_str
+OUT;
+
+			// if we reached the template field
+			if($fname == 'template'){
+				$id 	= $inputfield->value; // id of selected template
+				$tpl 	= $this->templates->get($id);
+				$tname 	= $tpl->name;
+				$settings_str = '';
+				if($tpl->id){
+					$settings = $tpl->getTableData();
+					foreach($settings as $key => $value) {
+
+						if($key == "data") {
+							// data contains all the settings
+							foreach($value as $data_key => $data_value) {
+								if($data_key == "childTemplates" || $data_key == "parentTemplates") {
+									if(is_array($data_value) && !empty($data_value)) {
+										$tpl_data = '';
+										foreach($data_value as $val){
+											$tpl = $this->templates->get((int)$val);
+											if($tpl->id) $tpl_data .= "<a href='{$this->config->urls->admin}setup/template/edit/?id=$tpl->id'>$tpl->name</a> ";
+										}
+										$data_value = $tpl_data;
+									} else {
+										$data_value = '-';
+									}
+								}
+								else if($data_key == "cacheExpirePages") {
+									if(is_array($data_value) && !empty($data_value)) {
+										$page_data = '';
+										foreach($data_value as $sub_key => $sub_value) {
+											$p_data = $this->pages->get((int)$sub_value);
+											$page_data .= $p_data->path . "|";
+										}
+										$data_value = rtrim($page_data,"|");
+									} else {
+										$data_value = '-';
+									}
+								}
+								else if(is_array($data_value)){
+									$v = "";
+									foreach($data_value as $k => $arr) {
+										if(is_array($arr)) {
+											$v .= $k . " => (" . implode("|", $arr) . ") ";
+										} else {
+											$v .= $arr;
+										}
+									}
+									$data_value = $v;
+								}
+								$settings_str .= "<span>$data_key:</span> $data_value<br/>";
+							}
+
+						} else {
+							$settings_str .= "<span>$key:</span> " . $value . "<br/>";
+						}
+
+					}
+				}
+				if($settings_str) $settings_str = "<div class='hfl_settings'>$settings_str</div>";
+				$with =
+<<<OUT
+	<div class='templateEditLink ui-helper-clearfix'>
+		<a href='{$this->config->urls->admin}setup/template/edit?id={$id}' title='edit template settings'>
+		{$tname}
+		</a>
+		<a href='#' class='hfl_settings_toggle' onclick='$(this).closest(".templateEditLink").next(".hfl_settings").fadeToggle("fast"); return false;'><span class='ui-icon ui-icon-gear'></span></a>
+	</div>
+	$settings_str
+OUT;
+				$event->return .= $with;
+			}
+	}
+}
